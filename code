@@ -1,17 +1,21 @@
 import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import math
 from sklearn.preprocessing import StandardScaler
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+from statsmodels.tools.tools import add_constant
 
-# Helper function to clean Nomis headers
+# --- 1. DATA LOADING & PRE-MERGE CLEANING ---
+
 def load_and_clean_census(file_path, column_mapping):
-    # Skip the metadata & change column names
+    """Parses Nomis Census CSVs, cleans headers, and renames columns."""
     df = pd.read_csv(file_path, skiprows=7)
     df = df.rename(columns={'mnemonic': 'lsoa21cd'})
-
-    # Filter only necessary columns
     return df[['lsoa21cd'] + list(column_mapping.keys())].rename(columns=column_mapping)
 
-# 1. Load and clean Census datasets
-# TS011: Households by deprivation dimensions [cite: 15]
+# Define column mappings based on literature and research focus
 dep_map = {
     'Household is not deprived in any dimension': 'prop_dep_0',
     'Household is deprived in one dimension': 'prop_dep_1',
@@ -20,7 +24,6 @@ dep_map = {
     'Household is deprived in four dimensions': 'prop_dep_4'
 }
 
-# TS021: Ethnic group [cite: 13, 14]
 eth_map = {
     'Asian, Asian British or Asian Welsh': 'prop_ethnic_asian',
     'Black, Black British, Black Welsh, Caribbean or African': 'prop_ethnic_black',
@@ -29,7 +32,6 @@ eth_map = {
     'Other ethnic group': 'prop_ethnic_other'
 }
 
-# TS045: Car or van availability [cite: 28, 33]
 car_map = {
     'No cars or vans in household': 'prop_car_0',
     '1 car or van in household': 'prop_car_1',
@@ -37,7 +39,6 @@ car_map = {
     '3 or more cars or vans in household': 'prop_car_3_plus'
 }
 
-# TS062: NS-SEC (Social Class)
 social_map = {
     'L1, L2 and L3 Higher managerial, administrative and professional occupations': 'prop_class_high',
     'L12 Semi-routine occupations': 'prop_class_semi_routine',
@@ -46,30 +47,110 @@ social_map = {
     'L15 Full-time students': 'prop_class_student'
 }
 
-# TS066: Economic activity [cite: 19, 20]
 econ_map = {
     'Economically active (excluding full-time students)': 'prop_econ_active',
     'Economically active and a full-time student': 'prop_econ_active_student',
     'Economically inactive': 'prop_econ_inactive'
 }
 
-# Load AHAH v5 as the base
-# (Keeping domain scores for coloring, retail environment, health services, air quality, green/blue space, composite score)
-# Higher scores = less healthy
-ahah_df = pd.read_csv('ahah_v5.csv')[['lsoa21cd', 'domain_r', 'domain_h', 'domain_e', 'domain_g', 'ahah']]
+# Load AHAH v5 as the baseline dataframe
+ahah_df = pd.read_csv('ahah_v5.csv')[[
+    'lsoa21cd', 'domain_r', 'fast_food', 'ahah', 
+    'ahah_pct', 'domain_h', 'domain_e', 'domain_g'
+]]
 
-# Merging all census sectors
-census_dfs = [
-    load_and_clean_census('census2021_deprivation.csv', dep_map),
-    load_and_clean_census('census2021_ethnicity.csv', eth_map),
-    load_and_clean_census('census2021_car_access.csv', car_map),
-    load_and_clean_census('census2021_social_class.csv', social_map),
-    load_and_clean_census('census2021_econ_activity.csv', econ_map)
+# Iterate and merge Census datasets
+census_files = [
+    ('census2021_deprivation.csv', dep_map),
+    ('census2021_ethnicity.csv', eth_map),
+    ('census2021_car_access.csv', car_map),
+    ('census2021_social_class.csv', social_map),
+    ('census2021_econ_activity.csv', econ_map)
 ]
 
 final_df = ahah_df.copy()
-for df in census_dfs:
-    final_df = pd.merge(final_df, df, on='lsoa21cd', how='inner')
+for file, mapping in census_files:
+    final_df = pd.merge(final_df, load_and_clean_census(file, mapping), on='lsoa21cd', how='inner')
 
-# 5. Save Output
+# Drop rows with missing values to ensure distance matrix integrity for Ball Mapper
+final_df = final_df.dropna()
 final_df.to_csv('cleaned_data.csv', index=False)
+
+# --- 2. EXPLORATORY DATA ANALYSIS (EDA) & TRANSFORMATIONS ---
+
+def plot_distributions(df, columns, filename, color='skyblue', title_prefix="Original"):
+    """Helper function to visualize distributions of key variables."""
+    n_cols = 3
+    n_rows = math.ceil(len(columns) / n_cols)
+    plt.figure(figsize=(15, n_rows * 4))
+    
+    for i, var in enumerate(columns):
+        plt.subplot(n_rows, n_cols, i + 1)
+        sns.histplot(df[var], kde=True, color=color, bins=30)
+        plt.title(f'{title_prefix} Dist: {var}', fontsize=12)
+        plt.xlabel('Value')
+        plt.ylabel('Frequency')
+    
+    plt.tight_layout()
+    plt.savefig(filename)
+    plt.close()
+
+# Define core variables for visualization
+viz_cols = [
+    'ahah', 'prop_dep_4', 'prop_car_0', 'prop_ethnic_white', 
+    'prop_ethnic_asian', 'prop_ethnic_black', 'prop_class_never_worked', 
+    'prop_class_student', 'prop_econ_inactive'
+]
+
+# Generate baseline distribution plots
+plot_distributions(final_df, viz_cols, 'original_distributions.png')
+
+# Detect Outliers using IQR method
+numeric_df = final_df.select_dtypes(include=[np.number])
+Q1 = numeric_df.quantile(0.25)
+Q3 = numeric_df.quantile(0.75)
+IQR = Q3 - Q1
+outlier_counts = ((numeric_df < (Q1 - 1.5 * IQR)) | (numeric_df > (Q3 + 1.5 * IQR))).sum()
+print("\nOutlier counts per variable:\n", outlier_counts)
+
+# Apply Square Root Transformation to address significant right-skewness
+skewed_vars = [
+    'prop_ethnic_asian', 'prop_ethnic_black', 'prop_ethnic_mixed', 'prop_ethnic_other',
+    'prop_class_never_worked', 'prop_class_student', 'prop_econ_active_student', 'prop_dep_4'
+]
+df_transformed = final_df.copy()
+df_transformed[skewed_vars] = np.sqrt(final_df[skewed_vars])
+
+# Generate transformed distribution plots for comparison
+plot_distributions(df_transformed, viz_cols, 'transformed_distributions.png', color='salmon', title_prefix="Transformed")
+
+# --- 3. DIAGNOSTICS: CORRELATION & MULTICOLLINEARITY ---
+
+# Candidate axes for Ball Mapper construction
+axis_candidates = ['prop_car_0', 'prop_dep_4', 'prop_ethnic_white', 'prop_class_never_worked', 'prop_econ_inactive']
+
+# Correlation Heatmap (Including the dependent variable domain_r)
+plt.figure(figsize=(10, 8))
+sns.heatmap(df_transformed[axis_candidates + ['domain_r']].corr(), annot=True, cmap='RdBu_r', center=0, fmt=".2f")
+plt.title("Correlation Diagnostic: Axis Candidates vs. Retail Hazard Outcome")
+plt.savefig('correlation_heatmap.png')
+plt.show()
+
+# Variance Inflation Factor (VIF) to detect redundancy among axes
+X = add_constant(df_transformed[axis_candidates])
+vif_df = pd.DataFrame()
+vif_df["Variable"] = X.columns
+vif_df["VIF"] = [variance_inflation_factor(X.values, i) for i in range(X.shape[1])]
+print("\n--- Multicollinearity Check (VIF) ---")
+print(vif_df[vif_df['Variable'] != 'const'].sort_values('VIF', ascending=False))
+
+# --- 4. FINAL STANDARDIZATION ---
+
+# Z-score standardization is required for Euclidean distance metrics in Ball Mapper
+scaler = StandardScaler()
+df_final = df_transformed.copy()
+df_final[axis_candidates] = scaler.fit_transform(df_transformed[axis_candidates])
+
+# Export master dataset for TDA analysis
+df_final.to_csv('master_data_for_ballmapper.csv', index=False)
+print("\nPreprocessing complete. Master file saved: 'master_data_for_ballmapper.csv'")
