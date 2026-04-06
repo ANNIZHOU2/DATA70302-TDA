@@ -143,14 +143,6 @@ vif_df["Variable"] = X.columns
 vif_df["VIF"] = [variance_inflation_factor(X.values, i) for i in range(X.shape[1])]
 print("\n--- Multicollinearity Check (VIF) ---")
 print(vif_df[vif_df['Variable'] != 'const'].sort_values('VIF', ascending=False))
-
-# --- 4. FINAL STANDARDIZATION ---
-
-# Z-score standardization is required for Euclidean distance metrics in Ball Mapper
-scaler = StandardScaler()
-df_final = df_transformed.copy()
-df_final[axis_candidates] = scaler.fit_transform(df_transformed[axis_candidates])
-
 # Export master dataset for TDA analysis
 df_final.to_csv('master_data_for_ballmapper.csv', index=False)
 print("\nPreprocessing complete. Master file saved: 'master_data_for_ballmapper.csv'")
