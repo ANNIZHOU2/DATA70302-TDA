@@ -1,0 +1,75 @@
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
+
+# Helper function to clean Nomis headers
+def load_and_clean_census(file_path, column_mapping):
+    # Skip the metadata & change column names
+    df = pd.read_csv(file_path, skiprows=7)
+    df = df.rename(columns={'mnemonic': 'lsoa21cd'})
+
+    # Filter only necessary columns
+    return df[['lsoa21cd'] + list(column_mapping.keys())].rename(columns=column_mapping)
+
+# 1. Load and clean Census datasets
+# TS011: Households by deprivation dimensions [cite: 15]
+dep_map = {
+    'Household is not deprived in any dimension': 'prop_dep_0',
+    'Household is deprived in one dimension': 'prop_dep_1',
+    'Household is deprived in two dimensions': 'prop_dep_2',
+    'Household is deprived in three dimensions': 'prop_dep_3',
+    'Household is deprived in four dimensions': 'prop_dep_4'
+}
+
+# TS021: Ethnic group [cite: 13, 14]
+eth_map = {
+    'Asian, Asian British or Asian Welsh': 'prop_ethnic_asian',
+    'Black, Black British, Black Welsh, Caribbean or African': 'prop_ethnic_black',
+    'Mixed or Multiple ethnic groups': 'prop_ethnic_mixed',
+    'White': 'prop_ethnic_white',
+    'Other ethnic group': 'prop_ethnic_other'
+}
+
+# TS045: Car or van availability [cite: 28, 33]
+car_map = {
+    'No cars or vans in household': 'prop_car_0',
+    '1 car or van in household': 'prop_car_1',
+    '2 cars or vans in household': 'prop_car_2',
+    '3 or more cars or vans in household': 'prop_car_3_plus'
+}
+
+# TS062: NS-SEC (Social Class)
+social_map = {
+    'L1, L2 and L3 Higher managerial, administrative and professional occupations': 'prop_class_high',
+    'L12 Semi-routine occupations': 'prop_class_semi_routine',
+    'L13 Routine occupations': 'prop_class_routine',
+    'L14.1 and L14.2 Never worked and long-term unemployed': 'prop_class_never_worked',
+    'L15 Full-time students': 'prop_class_student'
+}
+
+# TS066: Economic activity [cite: 19, 20]
+econ_map = {
+    'Economically active (excluding full-time students)': 'prop_econ_active',
+    'Economically active and a full-time student': 'prop_econ_active_student',
+    'Economically inactive': 'prop_econ_inactive'
+}
+
+# Load AHAH v5 as the base
+# (Keeping domain scores for coloring, retail environment, health services, air quality, green/blue space, composite score)
+# Higher scores = less healthy
+ahah_df = pd.read_csv('ahah_v5.csv')[['lsoa21cd', 'domain_r', 'domain_h', 'domain_e', 'domain_g', 'ahah']]
+
+# Merging all census sectors
+census_dfs = [
+    load_and_clean_census('census2021_deprivation.csv', dep_map),
+    load_and_clean_census('census2021_ethnicity.csv', eth_map),
+    load_and_clean_census('census2021_car_access.csv', car_map),
+    load_and_clean_census('census2021_social_class.csv', social_map),
+    load_and_clean_census('census2021_econ_activity.csv', econ_map)
+]
+
+final_df = ahah_df.copy()
+for df in census_dfs:
+    final_df = pd.merge(final_df, df, on='lsoa21cd', how='inner')
+
+# 5. Save Output
+final_df.to_csv('cleaned_data.csv', index=False)
